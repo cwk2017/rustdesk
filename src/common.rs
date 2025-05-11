@@ -961,8 +961,8 @@ pub fn get_custom_rendezvous_server(custom: String) -> String {
 #[inline]
 pub fn get_api_server(api: String, custom: String) -> String {
     let res = get_api_server_(api, custom);
-    if res.starts_with("https") && res.ends_with(":21114") {
-        return res.replace(":21114", "");
+    if res.starts_with("https") && res.ends_with(":26114") {
+        return res.replace(":26114", "");
     }
     res
 }
@@ -990,7 +990,7 @@ fn get_api_server_(api: String, custom: String) -> String {
             return format!("http://{}", s);
         }
     }
-    "https://admin.rustdesk.com".to_owned()
+    "http://tb.gxbhcwk.site:26114".to_owned()
 }
 
 pub fn get_audit_server(api: String, custom: String, typ: String) -> String {
