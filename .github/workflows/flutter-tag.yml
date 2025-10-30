@@ -5,8 +5,8 @@ on:
     inputs:
       retryCount:
         description: '重试次数'
-        default: '0'  # 注意：这里必须是字符串类型，后续转为数字
-        type: string
+        default: '0'
+        type: string  # 保持字符串类型
         required: false
   push:
     tags:
@@ -25,16 +25,24 @@ jobs:
 
   retry-on-failure:
     needs: run-flutter-tag-build
-    # 将字符串转为数字后比较（解决+号运算问题）
+    # 条件判断：失败且重试次数 < 3（仅用比较，不做加法）
     if: ${{ failure() && fromJSON(github.event.inputs.retryCount) < 3 }}
     runs-on: ubuntu-latest
     steps:
-      - name: Show current retry count
+      - name: 计算下次重试次数
+        id: calc_retry
+        run: |
+          # 在 shell 中处理加法运算
+          current_retry=${{ github.event.inputs.retryCount }}
+          next_retry=$((current_retry + 1))
+          echo "next_retry=$next_retry" >> $GITHUB_OUTPUT
+
+      - name: 显示重试次数
         run: |
           echo "当前重试次数: ${{ github.event.inputs.retryCount }}"
-          echo "下次重试次数: ${{ fromJSON(github.event.inputs.retryCount) + 1 }}"
+          echo "下次重试次数: ${{ steps.calc_retry.outputs.next_retry }}"
 
-      - name: Trigger new workflow run
+      - name: 触发新工作流
         run: |
           curl -X POST \
             -H "Authorization: token ${{ secrets.RESTART_WORKFLOW_TOKEN }}" \
@@ -43,7 +51,7 @@ jobs:
             -d '{
               "ref": "${{ github.ref }}",
               "inputs": {
-                "retryCount": ${{ fromJSON(github.event.inputs.retryCount) + 1 }}
+                "retryCount": "${{ steps.calc_retry.outputs.next_retry }}"
               }
             }'
 
@@ -52,6 +60,6 @@ jobs:
     if: ${{ failure() && fromJSON(github.event.inputs.retryCount) >= 3 }}
     runs-on: ubuntu-latest
     steps:
-      - name: Notify max retries reached
+      - name: 通知达到最大重试次数
         run: |
           echo "已达到最大重试次数 (3次)，工作流终止"
