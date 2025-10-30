@@ -6,7 +6,7 @@ on:
       retryCount:
         description: '重试次数'
         default: '0'
-        type: string  # 保持字符串类型
+        type: string
         required: false
   push:
     tags:
@@ -25,35 +25,47 @@ jobs:
 
   retry-on-failure:
     needs: run-flutter-tag-build
-    # 条件判断：失败且重试次数 < 3（仅用比较，不做加法）
     if: ${{ failure() && fromJSON(github.event.inputs.retryCount) < 3 }}
     runs-on: ubuntu-latest
     steps:
       - name: 计算下次重试次数
         id: calc_retry
         run: |
-          # 在 shell 中处理加法运算
           current_retry=${{ github.event.inputs.retryCount }}
           next_retry=$((current_retry + 1))
           echo "next_retry=$next_retry" >> $GITHUB_OUTPUT
 
-      - name: 显示重试次数
-        run: |
-          echo "当前重试次数: ${{ github.event.inputs.retryCount }}"
-          echo "下次重试次数: ${{ steps.calc_retry.outputs.next_retry }}"
-
       - name: 触发新工作流
         run: |
-          curl -X POST \
+          # 构建API请求数据
+          PAYLOAD=$(jq -n \
+            --arg ref "${{ github.ref }}" \
+            --arg retry "${{ steps.calc_retry.outputs.next_retry }}" \
+            '{
+              "ref": $ref,
+              "inputs": {
+                "retryCount": $retry
+              }
+            }')
+          
+          # 发送API请求
+          RESPONSE=$(curl -s -w "%{http_code}" -X POST \
             -H "Authorization: token ${{ secrets.RESTART_WORKFLOW_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/${{ github.repository }}/actions/workflows/${{ github.workflow_id }}/dispatches \
-            -d '{
-              "ref": "${{ github.ref }}",
-              "inputs": {
-                "retryCount": "${{ steps.calc_retry.outputs.next_retry }}"
-              }
-            }'
+            -d "$PAYLOAD" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/${{ github.workflow }}/dispatches")
+          
+          # 提取状态码和响应体
+          STATUS_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          
+          # 检查请求是否成功
+          if [ "$STATUS_CODE" -eq 204 ]; then
+            echo "成功触发新工作流，下次重试次数: ${{ steps.calc_retry.outputs.next_retry }}"
+          else
+            echo "触发工作流失败，状态码: $STATUS_CODE，响应: $BODY"
+            exit 1
+          fi
 
   max-retries-reached:
     needs: run-flutter-tag-build
@@ -63,3 +75,4 @@ jobs:
       - name: 通知达到最大重试次数
         run: |
           echo "已达到最大重试次数 (3次)，工作流终止"
+    
