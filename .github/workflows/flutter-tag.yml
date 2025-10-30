@@ -2,6 +2,12 @@ name: Flutter Tag Build
 
 on:
   workflow_dispatch:
+    inputs:
+      retryCount:
+        description: '重试次数'
+        default: '0'
+        type: number
+        required: false
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
@@ -16,18 +22,37 @@ jobs:
     with:
       upload-artifact: true
       upload-tag: ${{ github.ref_name }}
-  run-flutter-tag-build2:
+
+  # 重试逻辑：当构建失败且重试次数小于3时，触发新的工作流
+  retry-on-failure:
     needs: run-flutter-tag-build
-    uses: ./.github/workflows/flutter-build.yml
-    secrets: inherit
-    with:
-      upload-artifact: true
-      upload-tag: ${{ github.ref_name }}
-  run-flutter-tag-build3:
-    if: ${{ failure() }}
-    needs: [run-flutter-tag-build, run-flutter-tag-build2]
-    uses: ./.github/workflows/flutter-build.yml
-    secrets: inherit
-    with:
-      upload-artifact: true
-      upload-tag: ${{ github.ref_name }}
+    if: ${{ failure() && github.event.inputs.retryCount < 3 }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show current retry count
+        run: |
+          echo "当前重试次数: ${{ github.event.inputs.retryCount }}"
+          echo "下次重试次数: ${{ github.event.inputs.retryCount + 1 }}"
+
+      - name: Trigger new workflow run
+        run: |
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.RESTART_WORKFLOW_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/actions/workflows/${{ github.workflow_id }}/dispatches \
+            -d '{
+              "ref": "${{ github.ref }}",
+              "inputs": {
+                "retryCount": ${{ github.event.inputs.retryCount + 1 }}
+              }
+            }'
+
+  # 达到最大重试次数时通知
+  max-retries-reached:
+    needs: run-flutter-tag-build
+    if: ${{ failure() && github.event.inputs.retryCount >= 3 }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify max retries reached
+        run: |
+          echo "已达到最大重试次数 (3次)，工作流终止"
