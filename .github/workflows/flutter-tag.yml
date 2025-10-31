@@ -39,25 +39,29 @@ jobs:
 
       - name: 触发新工作流
         run: |
-          # 获取参数
+          # 获取参数（使用工作流文件名替代不稳定的workflow_id）
           next_retry=${{ steps.calc_retry.outputs.next_retry }}
           repo="${{ github.repository }}"
-          workflow_id="${{ github.workflow_id }}"
+          workflow_file="flutter-tag.yml"  # 确保与当前工作流文件名一致
           ref="${{ github.ref }}"
           token="${{ secrets.RESTART_WORKFLOW_TOKEN }}"
           
-          # 构建JSON payload（单行格式，避免换行问题）
+          # 构建JSON payload
           payload='{"ref": "'"$ref"'", "inputs": {"retryCount": "'"$next_retry"'"}}'
           
-          # 构建完整的API URL
-          api_url="https://api.github.com/repos/$repo/actions/workflows/$workflow_id/dispatches"
+          # 构建完整的API URL（使用文件名而非ID）
+          api_url="https://api.github.com/repos/$repo/actions/workflows/$workflow_file/dispatches"
           
-          # 执行curl命令（单行格式，彻底避免换行导致的参数拆分）
-          response=$(curl --max-time 30 -s -w "%{http_code}" -X POST -H "Authorization: token $token" -H "Accept: application/vnd.github.v3+json" -d "$payload" "$api_url")
+          # 执行curl命令（使用临时文件分离响应体和状态码，避免解析错误）
+          response_file=$(mktemp)
+          status_code=$(curl --max-time 30 -s -w "%{http_code}" -X POST \
+            -H "Authorization: token $token" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d "$payload" "$api_url" -o "$response_file")
           
-          # 提取状态码和响应体
-          status_code=$(echo "$response" | tail -n1)
-          body=$(echo "$response" | head -n -1)
+          # 读取响应体
+          body=$(cat "$response_file")
+          rm "$response_file"
           
           # 检查结果
           if [ "$status_code" -eq 204 ]; then
