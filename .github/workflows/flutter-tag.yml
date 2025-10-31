@@ -2,81 +2,68 @@ name: Flutter Tag Build
 
 on:
   workflow_dispatch:
+    # 为手动触发新增 tag 输入参数，支持指定非最新 tag
     inputs:
-      retryCount:
-        description: '重试次数'
-        default: '0'
-        type: string
+      specified_tag:
+        description: '手动指定需要构建的 Tag（留空则使用最新 Tag）'
         required: false
+        type: string
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
       - '[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+-[0-9]+'
       - '[0-9]+.[0-9]+.[0-9]+-[0-9]+'
+  schedule:
+    - cron: '0 */4 * * *'  # 每4小时运行一次
 
 jobs:
+  get-target-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      target_tag: ${{ steps.determine-tag.outputs.tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取所有历史，确保标签信息完整
+
+      - name: Determine target Tag (based on trigger)
+        id: determine-tag
+        run: |
+          # 1. 处理 workflow_dispatch 触发：优先使用手动指定的 tag，无指定则用最新
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.specified_tag }}" ]; then
+            target_tag="${{ github.event.inputs.specified_tag }}"
+            echo "使用手动指定的 Tag: $target_tag"
+          # 2. 处理 push 触发：直接使用当前推送的 tag（github.ref_name 即 tag 名）
+          elif [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_type }}" = "tag" ]; then
+            target_tag="${{ github.ref_name }}"
+            echo "使用 Push 触发的当前 Tag: $target_tag"
+          # 3. 处理 schedule 触发：获取仓库最新 tag
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            latest_commit=$(git rev-list --tags --max-count=1)
+            target_tag=$(git tag --points-at $latest_commit)
+            echo "使用 Schedule 触发的最新 Tag: $target_tag"
+          # 4. 兜底：默认获取最新 tag（应对未覆盖的边缘场景）
+          else
+            latest_commit=$(git rev-list --tags --max-count=1)
+            target_tag=$(git tag --points-at $latest_commit)
+            echo "使用默认最新 Tag: $target_tag"
+          fi
+
+          # 验证 tag 非空（避免构建失败）
+          if [ -z "$target_tag" ]; then
+            echo "错误：未找到可用的 Tag，请先在仓库创建 Tag"
+            exit 1
+          fi
+
+          # 写入输出变量，供后续构建使用
+          echo "tag=$target_tag" >> $GITHUB_OUTPUT
+
   run-flutter-tag-build:
+    needs: get-target-tag  # 依赖 tag 确定作业，确保参数正确
     uses: ./.github/workflows/flutter-build.yml
     secrets: inherit
     with:
       upload-artifact: true
-      upload-tag: ${{ github.ref_name }}
-
-  retry-on-failure:
-    needs: run-flutter-tag-build
-    if: ${{ failure() && fromJSON(github.event.inputs.retryCount || '0') < 3 }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: 计算下次重试次数
-        id: calc_retry
-        run: |
-          current_retry=${{ github.event.inputs.retryCount || '0' }}
-          next_retry=$((current_retry + 1))
-          echo "next_retry=$next_retry" >> $GITHUB_OUTPUT
-        timeout-minutes: 1
-
-      - name: 触发新工作流
-        run: |
-          # 获取参数（使用工作流文件名替代不稳定的workflow_id）
-          next_retry=${{ steps.calc_retry.outputs.next_retry }}
-          repo="${{ github.repository }}"
-          workflow_file="flutter-tag.yml"  # 确保与当前工作流文件名一致
-          ref="${{ github.ref }}"
-          token="${{ secrets.RESTART_WORKFLOW_TOKEN }}"
-          
-          # 构建JSON payload
-          payload='{"ref": "'"$ref"'", "inputs": {"retryCount": "'"$next_retry"'"}}'
-          
-          # 构建完整的API URL（使用文件名而非ID）
-          api_url="https://api.github.com/repos/$repo/actions/workflows/$workflow_file/dispatches"
-          
-          # 执行curl命令（使用临时文件分离响应体和状态码，避免解析错误）
-          response_file=$(mktemp)
-          status_code=$(curl --max-time 30 -s -w "%{http_code}" -X POST \
-            -H "Authorization: token $token" \
-            -H "Accept: application/vnd.github.v3+json" \
-            -d "$payload" "$api_url" -o "$response_file")
-          
-          # 读取响应体
-          body=$(cat "$response_file")
-          rm "$response_file"
-          
-          # 检查结果
-          if [ "$status_code" -eq 204 ]; then
-            echo "✅ 成功触发第 $next_retry 次重试"
-          else
-            echo "❌ 触发失败，状态码: $status_code，响应: $body"
-            exit 1
-          fi
-        timeout-minutes: 1
-
-  max-retries-reached:
-    needs: run-flutter-tag-build
-    if: ${{ failure() && fromJSON(github.event.inputs.retryCount || '0') >= 3 }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: 通知达到最大重试次数
-        run: |
-          echo "❌ 已达到最大重试次数 (3次)，工作流终止"
+      upload-tag: ${{ needs.get-target-tag.outputs.target_tag }}  # 传递最终确定的 tag
