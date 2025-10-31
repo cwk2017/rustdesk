@@ -48,6 +48,7 @@ env:
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}"
 
 jobs:
+xz
   generate-bridge:
     uses: ./.github/workflows/bridge.yml
 
