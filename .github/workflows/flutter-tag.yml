@@ -25,54 +25,57 @@ jobs:
 
   retry-on-failure:
     needs: run-flutter-tag-build
-    if: ${{ failure() && fromJSON(github.event.inputs.retryCount) < 3 }}
+    if: ${{ failure() && fromJSON(github.event.inputs.retryCount || '0') < 3 }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5  # 整个Job超时控制（5分钟内必须完成）
     steps:
       - name: 计算下次重试次数
         id: calc_retry
         run: |
-          current_retry=${{ github.event.inputs.retryCount }}
+          current_retry=${{ github.event.inputs.retryCount || '0' }}
           next_retry=$((current_retry + 1))
           echo "next_retry=$next_retry" >> $GITHUB_OUTPUT
+        timeout-minutes: 1  # 步骤级超时
 
       - name: 触发新工作流
         run: |
-          # 构建API请求数据
-          PAYLOAD=$(jq -n \
-            --arg ref "${{ github.ref }}" \
-            --arg retry "${{ steps.calc_retry.outputs.next_retry }}" \
-            '{
-              "ref": $ref,
-              "inputs": {
-                "retryCount": $retry
-              }
-            }')
+          next_retry=${{ steps.calc_retry.outputs.next_retry }}
           
-          # 发送API请求
-          RESPONSE=$(curl -s -w "%{http_code}" -X POST \
+          # 直接拼接JSON（避免jq依赖）
+          PAYLOAD='{
+            "ref": "${{ github.ref }}",
+            "inputs": {
+              "retryCount": "'"$next_retry"'"
+            }
+          }'
+          
+          # 调用API（添加超时和状态检查）
+          RESPONSE=$(curl --max-time 30 \  # 网络请求超时30秒
+            -s -w "%{http_code}" \         # 捕获状态码
+            -X POST \
             -H "Authorization: token ${{ secrets.RESTART_WORKFLOW_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
             -d "$PAYLOAD" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/${{ github.workflow }}/dispatches")
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/${{ github.workflow_id }}/dispatches")
           
-          # 提取状态码和响应体
+          # 分离响应体和状态码
           STATUS_CODE=$(echo "$RESPONSE" | tail -n1)
           BODY=$(echo "$RESPONSE" | head -n -1)
           
-          # 检查请求是否成功
+          # 状态检查（204为成功）
           if [ "$STATUS_CODE" -eq 204 ]; then
-            echo "成功触发新工作流，下次重试次数: ${{ steps.calc_retry.outputs.next_retry }}"
+            echo "✅ 成功触发第 $next_retry 次重试"
           else
-            echo "触发工作流失败，状态码: $STATUS_CODE，响应: $BODY"
-            exit 1
+            echo "❌ 触发失败，状态码: $STATUS_CODE，响应: $BODY"
+            exit 1  # 立即退出避免阻塞
           fi
+        timeout-minutes: 1  # 步骤级超时
 
   max-retries-reached:
     needs: run-flutter-tag-build
-    if: ${{ failure() && fromJSON(github.event.inputs.retryCount) >= 3 }}
+    if: ${{ failure() && fromJSON(github.event.inputs.retryCount || '0') >= 3 }}
     runs-on: ubuntu-latest
     steps:
       - name: 通知达到最大重试次数
         run: |
-          echo "已达到最大重试次数 (3次)，工作流终止"
-    
+          echo "❌ 已达到最大重试次数 (3次)，工作流终止"
